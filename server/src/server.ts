@@ -24,8 +24,8 @@ class SignalingServer {
   private server: any;
   private io: SocketIOServer;
   private connectedUsers: Map<string, User> = new Map();
-  private allowedUserIds: Set<string>;
-  private contactList: any[];
+  private allowedUserIds: Set<string> = new Set(); 
+  private contactList: any[] = [];
 
   constructor() {
     this.app = express();
