@@ -7,15 +7,14 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME_BASE: ${{ github.repository }}
 
 jobs:
   build:
     runs-on: ubuntu-latest
     outputs:
-      image-tag: ${{ steps.meta.outputs.tags }}
-      image-digest: ${{ steps.build.outputs.digest }}
-
+      signaling-image: ${{ steps.meta.outputs.signaling-image }}
+      web-image: ${{ steps.meta.outputs.web-image }}
+    
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -30,32 +29,62 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Generate image metadata
+        id: meta
+        run: |
+          # Преобразуем имя репозитория в нижний регистр
+          REPO_NAME=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+          TAG="${{ github.ref_name }}-${{ github.sha }}"
+          
+          SIGNALING_IMAGE="${{ env.REGISTRY }}/${REPO_NAME}/signaling:${TAG}"
+          WEB_IMAGE="${{ env.REGISTRY }}/${REPO_NAME}/web:${TAG}"
+          
+          echo "signaling-image=${SIGNALING_IMAGE}" >> $GITHUB_OUTPUT
+          echo "web-image=${WEB_IMAGE}" >> $GITHUB_OUTPUT
+          
+          echo "Signaling image: ${SIGNALING_IMAGE}"
+          echo "Web image: ${WEB_IMAGE}"
+
       - name: Build and push signaling server
         uses: docker/build-push-action@v5
         with:
           context: ./server
           push: true
-          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_BASE }}/signaling:${{ github.ref_name }}-${{ github.sha }}
+          tags: ${{ steps.meta.outputs.signaling-image }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          platforms: linux/amd64
+          provenance: false
 
       - name: Build and push web client
         uses: docker/build-push-action@v5
         with:
           context: ./client
           push: true
-          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_BASE }}/web:${{ github.ref_name }}-${{ github.sha }}
+          tags: ${{ steps.meta.outputs.web-image }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          platforms: linux/amd64
+          provenance: false
 
   deploy:
     needs: build
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/production'
-
+    
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Transfer deployment files
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          source: "docker-compose.yml,proxy/,turn/,scripts/"
+          target: "/opt/webrtc-e2ee/"
+          overwrite: true
 
       - name: Deploy application
         uses: appleboy/ssh-action@v1.0.3
@@ -64,9 +93,9 @@ jobs:
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_SSH_KEY }}
           script: |
-            cd /opt/webrtc-e2ee/current || { mkdir -p /opt/webrtc-e2ee/current && cd /opt/webrtc-e2ee/current; }
-
-            # Create deployment environment
+            cd /opt/webrtc-e2ee
+            
+            # Создаем временный файл окружения
             cat > .env.deploy << EOF
             DOMAIN=${{ secrets.DOMAIN }}
             EMAIL_LETSENCRYPT=${{ secrets.EMAIL_LETSENCRYPT }}
@@ -80,17 +109,39 @@ jobs:
             SIGNALING_PUBLIC_URL=${{ secrets.SIGNALING_PUBLIC_URL }}
             APP_PUBLIC_URL=${{ secrets.APP_PUBLIC_URL }}
             VPS_HOST=${{ secrets.VPS_HOST }}
-            REGISTRY_SIGNALING=${{ env.REGISTRY }}/${{ env.IMAGE_NAME_BASE }}/signaling:${{ github.ref_name }}-${{ github.sha }}
-            REGISTRY_WEB=${{ env.REGISTRY }}/${{ env.IMAGE_NAME_BASE }}/web:${{ github.ref_name }}-${{ github.sha }}
+            REGISTRY_SIGNALING=${{ needs.build.outputs.signaling-image }}
+            REGISTRY_WEB=${{ needs.build.outputs.web-image }}
             EOF
-
+            
             chmod 600 .env.deploy
-            set -a; source .env.deploy; set +a
-
+            
+            # Авторизуемся в registry
             echo "${{ secrets.GITHUB_TOKEN }}" | docker login ${{ env.REGISTRY }} -u ${{ github.actor }} --password-stdin
+            
+            # Обновляем docker-compose для использования готовых образов
+            sed -i 's|build:|#build:|g' docker-compose.yml
+            sed -i 's|context: ./server|#context: ./server|g' docker-compose.yml
+            sed -i 's|context: ./client|#context: ./client|g' docker-compose.yml
+            sed -i 's|dockerfile: Dockerfile|#dockerfile: Dockerfile|g' docker-compose.yml
+            
+            # Добавляем image директивы
+            sed -i '/signaling:/a\    image: ${REGISTRY_SIGNALING}' docker-compose.yml
+            sed -i '/web:/a\    image: ${REGISTRY_WEB}' docker-compose.yml
+            
+            # Загружаем переменные окружения
+            set -a; source .env.deploy; set +a
+            
+            # Останавливаем старые контейнеры
+            docker compose down || true
+            
+            # Запускаем новые контейнеры
             docker compose pull
             docker compose up -d --remove-orphans
+            
+            # Очищаем временный файл
             rm -f .env.deploy
+            
+            # Выходим из registry
             docker logout ${{ env.REGISTRY }}
 
       - name: Run health checks
@@ -100,7 +151,31 @@ jobs:
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_SSH_KEY }}
           script: |
-            cd /opt/webrtc-e2ee/current
+            cd /opt/webrtc-e2ee
             sleep 30
             chmod +x scripts/healthcheck.sh
             ./scripts/healthcheck.sh
+
+      - name: Cleanup old images
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          script: |
+            # Удаляем неиспользуемые образы
+            docker image prune -f
+            docker container prune -f
+            
+            # Оставляем только последние 3 образа каждого типа
+            docker images --format "table {{.Repository}}:{{.Tag}}\t{{.CreatedAt}}" | grep -E "(signaling|web)" | sort -k2 -r | tail -n +7 | awk '{print $1}' | xargs -r docker rmi || true
+
+      - name: Deployment notification
+        if: always()
+        run: |
+          if [ "${{ job.status }}" == "success" ]; then
+            echo "✅ Deployment successful to ${{ secrets.VPS_HOST }}"
+            echo "🌐 Application URL: ${{ secrets.APP_PUBLIC_URL }}"
+          else
+            echo "❌ Deployment failed"
+          fi
