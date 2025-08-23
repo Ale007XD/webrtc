@@ -1,20 +1,42 @@
-# Dockerfile for Signaling Server - Fixed version
+# Dockerfile for Signaling Server - Enhanced with debugging
 FROM node:18-alpine AS builder
 
 # Set working directory
 WORKDIR /app
 
-# Copy package files
+# Install system dependencies
+RUN apk add --no-cache python3 make g++
+
+# Copy package files first
 COPY package*.json ./
 
-# Install ALL dependencies (including devDependencies for build)
-RUN npm ci && npm cache clean --force
+# Debug: Show Node.js and npm versions
+RUN node --version && npm --version
+
+# Debug: Show package.json content
+RUN echo "=== package.json ===" && cat package.json
+
+# Debug: Check if package-lock.json exists
+RUN if [ -f package-lock.json ]; then echo "package-lock.json exists"; else echo "package-lock.json missing, using npm install"; fi
+
+# Install dependencies (fallback to npm install if npm ci fails)
+RUN if [ -f package-lock.json ]; then \
+        npm ci; \
+    else \
+        npm install; \
+    fi && npm cache clean --force
 
 # Copy source code
 COPY . .
 
+# Debug: Show directory structure
+RUN echo "=== Directory structure ===" && ls -la
+
 # Build TypeScript to JavaScript
 RUN npm run build
+
+# Debug: Show build output
+RUN echo "=== Build output ===" && ls -la dist/
 
 # Production stage
 FROM node:18-alpine AS production
@@ -33,7 +55,11 @@ WORKDIR /app
 COPY --from=builder /app/package*.json ./
 
 # Install ONLY production dependencies
-RUN npm ci --only=production && npm cache clean --force && \
+RUN if [ -f package-lock.json ]; then \
+        npm ci --only=production; \
+    else \
+        npm install --only=production; \
+    fi && npm cache clean --force && \
     rm -rf /tmp/* /var/cache/apk/*
 
 # Copy built application from builder stage
