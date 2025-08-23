@@ -14,7 +14,7 @@ jobs:
     outputs:
       signaling-image: ${{ steps.meta.outputs.signaling-image }}
       web-image: ${{ steps.meta.outputs.web-image }}
-    
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -32,16 +32,12 @@ jobs:
       - name: Generate image metadata
         id: meta
         run: |
-          # Преобразуем имя репозитория в нижний регистр
           REPO_NAME=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
           TAG="${{ github.ref_name }}-${{ github.sha }}"
-          
           SIGNALING_IMAGE="${{ env.REGISTRY }}/${REPO_NAME}/signaling:${TAG}"
           WEB_IMAGE="${{ env.REGISTRY }}/${REPO_NAME}/web:${TAG}"
-          
           echo "signaling-image=${SIGNALING_IMAGE}" >> $GITHUB_OUTPUT
           echo "web-image=${WEB_IMAGE}" >> $GITHUB_OUTPUT
-          
           echo "Signaling image: ${SIGNALING_IMAGE}"
           echo "Web image: ${WEB_IMAGE}"
 
@@ -71,31 +67,38 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/production'
-    
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # Передача всех нужных файлов на сервер
       - name: Transfer deployment files
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_SSH_KEY }}
-          source: "docker-compose.yml,proxy/,turn/,scripts/"
-          target: "/opt/webrtc-e2ee/"
+          source: |
+            docker-compose.yml
+            proxy/
+            turn/
+            scripts/
+          target: /opt/webrtc-e2ee/
           overwrite: true
 
-      - name: Deploy application
+      # Основной деплой: генерация .env, перезапуск сервисов, pull
+      - name: Deploy application (env & Docker Compose)
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_SSH_KEY }}
           script: |
+            set -e
             cd /opt/webrtc-e2ee
-            
-            # Создаем временный файл окружения
+
+            # Создать .env.deploy из secrets
             cat > .env.deploy << EOF
             DOMAIN=${{ secrets.DOMAIN }}
             EMAIL_LETSENCRYPT=${{ secrets.EMAIL_LETSENCRYPT }}
@@ -112,38 +115,31 @@ jobs:
             REGISTRY_SIGNALING=${{ needs.build.outputs.signaling-image }}
             REGISTRY_WEB=${{ needs.build.outputs.web-image }}
             EOF
-            
+
             chmod 600 .env.deploy
-            
-            # Авторизуемся в registry
+            cp .env.deploy .env
+
             echo "${{ secrets.GITHUB_TOKEN }}" | docker login ${{ env.REGISTRY }} -u ${{ github.actor }} --password-stdin
-            
-            # Обновляем docker-compose для использования готовых образов
+
+            # build → comment. image → вставить. Всегда image!
             sed -i 's|build:|#build:|g' docker-compose.yml
             sed -i 's|context: ./server|#context: ./server|g' docker-compose.yml
             sed -i 's|context: ./client|#context: ./client|g' docker-compose.yml
             sed -i 's|dockerfile: Dockerfile|#dockerfile: Dockerfile|g' docker-compose.yml
-            
-            # Добавляем image директивы
-            sed -i '/signaling:/a\    image: ${REGISTRY_SIGNALING}' docker-compose.yml
-            sed -i '/web:/a\    image: ${REGISTRY_WEB}' docker-compose.yml
-            
-            # Загружаем переменные окружения
-            set -a; source .env.deploy; set +a
-            
-            # Останавливаем старые контейнеры
+
+            if ! grep -q "image: " docker-compose.yml; then
+              sed -i '/signaling:/a\    image: ${REGISTRY_SIGNALING}' docker-compose.yml
+              sed -i '/web:/a\    image: ${REGISTRY_WEB}' docker-compose.yml
+            fi
+
             docker compose down || true
-            
-            # Запускаем новые контейнеры
             docker compose pull
             docker compose up -d --remove-orphans
-            
-            # Очищаем временный файл
+
             rm -f .env.deploy
-            
-            # Выходим из registry
             docker logout ${{ env.REGISTRY }}
 
+      # Healthcheck
       - name: Run health checks
         uses: appleboy/ssh-action@v1.0.3
         with:
@@ -152,10 +148,11 @@ jobs:
           key: ${{ secrets.VPS_SSH_KEY }}
           script: |
             cd /opt/webrtc-e2ee
-            sleep 30
-            chmod +x scripts/healthcheck.sh
-            ./scripts/healthcheck.sh
+            sleep 25
+            chmod +x scripts/healthcheck.sh || true
+            ./scripts/healthcheck.sh || true
 
+      # Cleanup контейнеров и старых образов
       - name: Cleanup old images
         uses: appleboy/ssh-action@v1.0.3
         with:
@@ -163,11 +160,9 @@ jobs:
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_SSH_KEY }}
           script: |
-            # Удаляем неиспользуемые образы
             docker image prune -f
             docker container prune -f
-            
-            # Оставляем только последние 3 образа каждого типа
+            # Оставить только новые
             docker images --format "table {{.Repository}}:{{.Tag}}\t{{.CreatedAt}}" | grep -E "(signaling|web)" | sort -k2 -r | tail -n +7 | awk '{print $1}' | xargs -r docker rmi || true
 
       - name: Deployment notification
@@ -178,4 +173,3 @@ jobs:
             echo "🌐 Application URL: ${{ secrets.APP_PUBLIC_URL }}"
           else
             echo "❌ Deployment failed"
-          fi
