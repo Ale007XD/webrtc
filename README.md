@@ -42,7 +42,7 @@
 
 ```bash
 VPS_HOST=your-server.example.com
-VPS_USER=docker-deploy
+VPS_USER=deploy
 VPS_SSH_KEY=-----BEGIN OPENSSH PRIVATE KEY-----...
 DOMAIN=example.com
 EMAIL_LETSENCRYPT=admin@example.com
