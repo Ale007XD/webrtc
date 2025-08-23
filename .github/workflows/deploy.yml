@@ -1,0 +1,106 @@
+name: Deploy WebRTC E2EE System
+
+on:
+  push:
+    branches: [ main, production ]
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME_BASE: ${{ github.repository }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      image-tag: ${{ steps.meta.outputs.tags }}
+      image-digest: ${{ steps.build.outputs.digest }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push signaling server
+        uses: docker/build-push-action@v5
+        with:
+          context: ./server
+          push: true
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_BASE }}/signaling:${{ github.ref_name }}-${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build and push web client
+        uses: docker/build-push-action@v5
+        with:
+          context: ./client
+          push: true
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_BASE }}/web:${{ github.ref_name }}-${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/production'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Deploy application
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          script: |
+            cd /opt/webrtc-e2ee/current || { mkdir -p /opt/webrtc-e2ee/current && cd /opt/webrtc-e2ee/current; }
+
+            # Create deployment environment
+            cat > .env.deploy << EOF
+            DOMAIN=${{ secrets.DOMAIN }}
+            EMAIL_LETSENCRYPT=${{ secrets.EMAIL_LETSENCRYPT }}
+            JWT_SIGNING_KEY=${{ secrets.JWT_SIGNING_KEY }}
+            TURN_REALM=${{ secrets.TURN_REALM }}
+            TURN_AUTH_SECRET=${{ secrets.TURN_AUTH_SECRET }}
+            TURN_CRED_TTL=${{ secrets.TURN_CRED_TTL }}
+            ALLOWED_USER_IDS=${{ secrets.ALLOWED_USER_IDS }}
+            CONTACT_LIST_JSON=${{ secrets.CONTACT_LIST_JSON }}
+            RATE_LIMITS_JSON=${{ secrets.RATE_LIMITS_JSON }}
+            SIGNALING_PUBLIC_URL=${{ secrets.SIGNALING_PUBLIC_URL }}
+            APP_PUBLIC_URL=${{ secrets.APP_PUBLIC_URL }}
+            VPS_HOST=${{ secrets.VPS_HOST }}
+            REGISTRY_SIGNALING=${{ env.REGISTRY }}/${{ env.IMAGE_NAME_BASE }}/signaling:${{ github.ref_name }}-${{ github.sha }}
+            REGISTRY_WEB=${{ env.REGISTRY }}/${{ env.IMAGE_NAME_BASE }}/web:${{ github.ref_name }}-${{ github.sha }}
+            EOF
+
+            chmod 600 .env.deploy
+            set -a; source .env.deploy; set +a
+
+            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ${{ env.REGISTRY }} -u ${{ github.actor }} --password-stdin
+            docker compose pull
+            docker compose up -d --remove-orphans
+            rm -f .env.deploy
+            docker logout ${{ env.REGISTRY }}
+
+      - name: Run health checks
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          script: |
+            cd /opt/webrtc-e2ee/current
+            sleep 30
+            chmod +x scripts/healthcheck.sh
+            ./scripts/healthcheck.sh
