@@ -1,175 +1,64 @@
-name: Deploy WebRTC E2EE System
+name: Deploy WebRTC E2EE
 
 on:
   push:
-    branches: [ main, production ]
+    branches: [main]
   workflow_dispatch:
 
-env:
-  REGISTRY: ghcr.io
-
 jobs:
-  build:
-    runs-on: ubuntu-latest
-    outputs:
-      signaling-image: ${{ steps.meta.outputs.signaling-image }}
-      web-image: ${{ steps.meta.outputs.web-image }}
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Log in to Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Generate image metadata
-        id: meta
-        run: |
-          REPO_NAME=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
-          TAG="${{ github.ref_name }}-${{ github.sha }}"
-          SIGNALING_IMAGE="${{ env.REGISTRY }}/${REPO_NAME}/signaling:${TAG}"
-          WEB_IMAGE="${{ env.REGISTRY }}/${REPO_NAME}/web:${TAG}"
-          echo "signaling-image=${SIGNALING_IMAGE}" >> $GITHUB_OUTPUT
-          echo "web-image=${WEB_IMAGE}" >> $GITHUB_OUTPUT
-          echo "Signaling image: ${SIGNALING_IMAGE}"
-          echo "Web image: ${WEB_IMAGE}"
-
-      - name: Build and push signaling server
-        uses: docker/build-push-action@v5
-        with:
-          context: ./server
-          push: true
-          tags: ${{ steps.meta.outputs.signaling-image }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          platforms: linux/amd64
-          provenance: false
-
-      - name: Build and push web client
-        uses: docker/build-push-action@v5
-        with:
-          context: ./client
-          push: true
-          tags: ${{ steps.meta.outputs.web-image }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          platforms: linux/amd64
-          provenance: false
-
   deploy:
-    needs: build
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/production'
-
+    
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      # Передача всех нужных файлов на сервер
-      - name: Transfer deployment files
-        uses: appleboy/scp-action@v0.1.7
-        with:
-          host: ${{ secrets.VPS_HOST }}
-          username: ${{ secrets.VPS_USER }}
-          key: ${{ secrets.VPS_SSH_KEY }}
-          source: |
-            docker-compose.yml
-            proxy/
-            turn/
-            scripts/
-          target: /opt/webrtc-e2ee/
-          overwrite: true
-
-      # Основной деплой: генерация .env, перезапуск сервисов, pull
-      - name: Deploy application (env & Docker Compose)
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ secrets.VPS_HOST }}
-          username: ${{ secrets.VPS_USER }}
-          key: ${{ secrets.VPS_SSH_KEY }}
-          script: |
-            set -e
-            cd /opt/webrtc-e2ee
-
-            # Создать .env.deploy из secrets
-            cat > .env.deploy << EOF
-            DOMAIN=${{ secrets.DOMAIN }}
-            EMAIL_LETSENCRYPT=${{ secrets.EMAIL_LETSENCRYPT }}
-            JWT_SIGNING_KEY=${{ secrets.JWT_SIGNING_KEY }}
-            TURN_REALM=${{ secrets.TURN_REALM }}
-            TURN_AUTH_SECRET=${{ secrets.TURN_AUTH_SECRET }}
-            TURN_CRED_TTL=${{ secrets.TURN_CRED_TTL }}
-            ALLOWED_USER_IDS=${{ secrets.ALLOWED_USER_IDS }}
-            CONTACT_LIST_JSON=${{ secrets.CONTACT_LIST_JSON }}
-            RATE_LIMITS_JSON=${{ secrets.RATE_LIMITS_JSON }}
-            SIGNALING_PUBLIC_URL=${{ secrets.SIGNALING_PUBLIC_URL }}
-            APP_PUBLIC_URL=${{ secrets.APP_PUBLIC_URL }}
-            VPS_HOST=${{ secrets.VPS_HOST }}
-            REGISTRY_SIGNALING=${{ needs.build.outputs.signaling-image }}
-            REGISTRY_WEB=${{ needs.build.outputs.web-image }}
-            EOF
-
-            chmod 600 .env.deploy
-            cp .env.deploy .env
-
-            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ${{ env.REGISTRY }} -u ${{ github.actor }} --password-stdin
-
-            # build → comment. image → вставить. Всегда image!
-            sed -i 's|build:|#build:|g' docker-compose.yml
-            sed -i 's|context: ./server|#context: ./server|g' docker-compose.yml
-            sed -i 's|context: ./client|#context: ./client|g' docker-compose.yml
-            sed -i 's|dockerfile: Dockerfile|#dockerfile: Dockerfile|g' docker-compose.yml
-
-            if ! grep -q "image: " docker-compose.yml; then
-              sed -i '/signaling:/a\    image: ${REGISTRY_SIGNALING}' docker-compose.yml
-              sed -i '/web:/a\    image: ${REGISTRY_WEB}' docker-compose.yml
-            fi
-
-            docker compose down || true
-            docker compose pull
-            docker compose up -d --remove-orphans
-
-            rm -f .env.deploy
-            docker logout ${{ env.REGISTRY }}
-
-      # Healthcheck
-      - name: Run health checks
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ secrets.VPS_HOST }}
-          username: ${{ secrets.VPS_USER }}
-          key: ${{ secrets.VPS_SSH_KEY }}
-          script: |
-            cd /opt/webrtc-e2ee
-            sleep 25
-            chmod +x scripts/healthcheck.sh || true
-            ./scripts/healthcheck.sh || true
-
-      # Cleanup контейнеров и старых образов
-      - name: Cleanup old images
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ secrets.VPS_HOST }}
-          username: ${{ secrets.VPS_USER }}
-          key: ${{ secrets.VPS_SSH_KEY }}
-          script: |
-            docker image prune -f
-            docker container prune -f
-            # Оставить только новые
-            docker images --format "table {{.Repository}}:{{.Tag}}\t{{.CreatedAt}}" | grep -E "(signaling|web)" | sort -k2 -r | tail -n +7 | awk '{print $1}' | xargs -r docker rmi || true
-
-      - name: Deployment notification
-        if: always()
-        run: |
-          if [ "${{ job.status }}" == "success" ]; then
-            echo "✅ Deployment successful to ${{ secrets.VPS_HOST }}"
-            echo "🌐 Application URL: ${{ secrets.APP_PUBLIC_URL }}"
-          else
-            echo "❌ Deployment failed"
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Verify required files
+      run: |
+        echo "Checking required files..."
+        ls -la
+        [ -f docker-compose.yml ] || (echo "❌ docker-compose.yml not found" && exit 1)
+        [ -d proxy ] || (echo "❌ proxy/ directory not found" && exit 1)
+        [ -d turn ] || (echo "❌ turn/ directory not found" && exit 1)
+        [ -d scripts ] || (echo "❌ scripts/ directory not found" && exit 1)
+        echo "✅ All required files present"
+        
+    - name: Create deployment archive
+      run: |
+        tar -czf deployment.tar.gz \
+          docker-compose.yml \
+          proxy/ \
+          turn/ \
+          scripts/
+        ls -la deployment.tar.gz
+        
+    - name: Transfer files to VPS
+      uses: appleboy/scp-action@v0.1.7
+      with:
+        host: ${{ secrets.VPS_HOST }}
+        username: ${{ secrets.VPS_USER }}
+        key: ${{ secrets.VPS_SSH_KEY }}
+        source: deployment.tar.gz
+        target: /opt/webrtc-e2ee/
+        
+    - name: Deploy on VPS
+      uses: appleboy/ssh-action@v1.0.3
+      with:
+        host: ${{ secrets.VPS_HOST }}
+        username: ${{ secrets.VPS_USER }}
+        key: ${{ secrets.VPS_SSH_KEY }}
+        script: |
+          cd /opt/webrtc-e2ee/
+          tar -xzf deployment.tar.gz
+          chmod +x scripts/*.sh
+          ./scripts/deploy.sh
+          
+    - name: Deployment notification
+      if: always()
+      run: |
+        if [[ "${{ job.status }}" == "success" ]]; then
+          echo "✅ Deployment successful to ${{ secrets.VPS_HOST }}"
+          echo "🌐 Application URL: ${{ secrets.APP_PUBLIC_URL }}"
+        else
+          echo "❌ Deployment failed"
+        fi
