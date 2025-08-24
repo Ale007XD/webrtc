@@ -24,7 +24,7 @@ services:
       - TURN_CRED_TTL=${TURN_CRED_TTL}
 
   signaling:
-    image: ghcr.io/Ale007XD/webrtc/signaling:latest
+    image: ghcr.io/ale007xd/webrtc-signaling:latest
     restart: always
     environment:
       - JWT_SIGNING_KEY=${JWT_SIGNING_KEY}
@@ -34,7 +34,7 @@ services:
       - APP_PUBLIC_URL=${APP_PUBLIC_URL}
 
   web:
-    image: ghcr.io/Ale007XD/webrtc/web:latest
+    image: ghcr.io/ale007xd/webrtc-web:latest
     restart: always
     environment:
       - DOMAIN=${DOMAIN}
