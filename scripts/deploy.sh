@@ -3,16 +3,24 @@ set -e
 
 echo "🚀 Starting WebRTC E2EE deployment..."
 
-# Create environment file
-cat > .env << EOF
-DOMAIN=${{ secrets.DOMAIN }}
-EMAIL_LETSENCRYPT=${{ secrets.EMAIL_LETSENCRYPT }}
-JWT_SIGNING_KEY=${{ secrets.JWT_SIGNING_KEY }}
-TURN_REALM=${{ secrets.TURN_REALM }}
-TURN_AUTH_SECRET=${{ secrets.TURN_AUTH_SECRET }}
+# Проверим что всё пришло
+if [[ -z "$DOMAIN" || -z "$EMAIL_LETSENCRYPT" || -z "$JWT_SIGNING_KEY" || -z "$TURN_REALM" || -z "$TURN_AUTH_SECRET" ]]; then
+  echo "❌ Один из ENV-параметров не задан!"
+  exit 1
+fi
+
+# Сохраняем .env для docker-compose
+cat > .env <<EOF
+DOMAIN=${DOMAIN}
+EMAIL_LETSENCRYPT=${EMAIL_LETSENCRYPT}
+JWT_SIGNING_KEY=${JWT_SIGNING_KEY}
+TURN_REALM=${TURN_REALM}
+TURN_AUTH_SECRET=${TURN_AUTH_SECRET}
 EOF
 
-# Deploy with Docker Compose
+echo "Содержимое .env:"
+cat .env
+
 docker-compose down || true
 docker-compose pull
 docker-compose up -d
