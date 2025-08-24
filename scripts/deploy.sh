@@ -21,8 +21,8 @@ EOF
 echo "Содержимое .env:"
 cat .env
 
-docker-compose down || true
-docker-compose pull
-docker-compose up -d
+docker compose down || true
+docker compose pull
+docker compose up -d
 
 echo "✅ Deployment completed successfully"
