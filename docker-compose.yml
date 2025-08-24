@@ -1,125 +1,45 @@
-# WebRTC E2EE Video Calling System
-# Docker Compose Configuration
-# All secrets passed through environment variables
-
 services:
-  # Reverse Proxy - Nginx with TLS termination and stream proxy
   proxy:
-    image: nginx:alpine
-    container_name: webrtc-proxy
-    restart: unless-stopped
+    build: ./proxy
+    restart: always
     ports:
       - "80:80"
       - "443:443"
     volumes:
       - ./proxy/nginx.conf:/etc/nginx/nginx.conf:ro
-      - nginx_certs:/etc/nginx/certs
-      - nginx_acme:/var/lib/letsencrypt
     environment:
       - DOMAIN=${DOMAIN}
-      - EMAIL_LETSENCRYPT=${EMAIL_LETSENCRYPT}
-    depends_on:
-      - signaling
-      - web
-      - turn
-    networks:
-      - webrtc_network
+      - APP_PUBLIC_URL=${APP_PUBLIC_URL}
 
-  # Signaling Server - WebSocket + HTTP API
-  signaling:
-    build:
-      context: ./server
-      dockerfile: Dockerfile
-    container_name: webrtc-signaling
-    restart: unless-stopped
-    expose:
-      - "3000"
+  turn:
+    build: ./turn
+    restart: always
+    ports:
+      - "3478:3478/udp"
+      - "3478:3478/tcp"
+      - "5349:5349/udp"
+      - "5349:5349/tcp"
+      - "49152-65535:49152-65535/udp"
     environment:
-      - NODE_ENV=production
-      - PORT=3000
-      - JWT_SIGNING_KEY=${JWT_SIGNING_KEY}
       - TURN_REALM=${TURN_REALM}
       - TURN_AUTH_SECRET=${TURN_AUTH_SECRET}
       - TURN_CRED_TTL=${TURN_CRED_TTL}
+
+  signaling:
+    build: ./server/signaling
+    restart: always
+    environment:
+      - JWT_SIGNING_KEY=${JWT_SIGNING_KEY}
       - ALLOWED_USER_IDS=${ALLOWED_USER_IDS}
       - CONTACT_LIST_JSON=${CONTACT_LIST_JSON}
-      - RATE_LIMITS_JSON=${RATE_LIMITS_JSON:-{}}
-      - CORS_ORIGIN=${APP_PUBLIC_URL}
-    networks:
-      - webrtc_network
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 40s
+      - VPS_HOST=${VPS_HOST}
+      - APP_PUBLIC_URL=${APP_PUBLIC_URL}
 
-  # TURN Server - coturn with TLS 443 and UDP/TCP 3478
-  turn:
-    image: coturn/coturn:4.6.3
-    container_name: webrtc-turn
-    restart: unless-stopped
-    ports:
-      - "3478:3478"
-      - "3478:3478/udp"
-      - "5349:5349"
-      - "5349:5349/udp"
-      - "49152-65535:49152-65535/udp"
-    volumes:
-      - ./turn/turnserver.conf:/etc/turnserver.conf:ro
-      - turn_logs:/var/log
-    environment:
-      - DETECT_EXTERNAL_IP=yes
-      - DOMAIN=${DOMAIN}
-      - TURN_REALM=${TURN_REALM}
-      - TURN_AUTH_SECRET=${TURN_AUTH_SECRET}
-      - EXTERNAL_IP=${VPS_HOST}
-    command: ["-c", "/etc/turnserver.conf", "-v"]
-    networks:
-      - webrtc_network
-    healthcheck:
-      test: ["CMD-SHELL", "turnutils_uclient -t -T -u test -w test -v ${VPS_HOST} -p 3478 || exit 1"]
-      interval: 60s
-      timeout: 30s
-      retries: 3
-      start_period: 30s
-
-  # Web Server - Static SPA client
   web:
-    build:
-      context: ./client
-      dockerfile: Dockerfile
-    container_name: webrtc-web
-    restart: unless-stopped
-    expose:
-      - "80"
+    build: ./server/web
+    restart: always
     environment:
-      - VITE_SIGNALING_WSS_URL=wss://${DOMAIN}/api/ws
-      - VITE_STUN_URL=stun:${DOMAIN}:3478
-      - VITE_TURN_URL=turn:${DOMAIN}:3478
-      - VITE_TURNS_URL=turns:${DOMAIN}:5349
-      - VITE_E2EE_ENABLED=true
-      - VITE_MAX_USERS=20
-    networks:
-      - webrtc_network
-    healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 10s
+      - DOMAIN=${DOMAIN}
+      - APP_PUBLIC_URL=${APP_PUBLIC_URL}
 
-networks:
-  webrtc_network:
-    driver: bridge
-    ipam:
-      config:
-        - subnet: 172.20.0.0/16
-
-volumes:
-  nginx_certs:
-    driver: local
-  nginx_acme:
-    driver: local
-  turn_logs:
-    driver: local
+# Примечание: Если нет исходников для сборки - замените build: на image:yourrepo/image:tag
