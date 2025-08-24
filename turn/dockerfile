@@ -1,7 +1,5 @@
 FROM coturn/coturn:latest
 
-# Стандартный официальный образ coturn, только EXPOSE + CMD.
-# Для production-конфигов используйте volume/docker-compose.
 EXPOSE 3478/tcp
 EXPOSE 3478/udp
 EXPOSE 5349/tcp
