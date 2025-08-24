@@ -1,4 +1,4 @@
-name: Deploy WebRTC E2EE
+name: Deploy WebRTC E2EE (only pull)
 
 on:
   push:
@@ -13,17 +13,13 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Prepare deployment archive
-        run: |
-          tar -czf deployment.tar.gz docker-compose.yml proxy/ turn/ scripts/ server/
-
-      - name: SCP to VPS
+      - name: SCP docker-compose.yml to VPS
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_SSH_KEY }}
-          source: deployment.tar.gz
+          source: docker-compose.yml
           target: /opt/webrtc-e2ee/
 
       - name: Remote deploy on VPS
@@ -36,19 +32,25 @@ jobs:
             DOMAIN,EMAIL_LETSENCRYPT,JWT_SIGNING_KEY,TURN_REALM,TURN_AUTH_SECRET,TURN_CRED_TTL,ALLOWED_USER_IDS,CONTACT_LIST_JSON,APP_PUBLIC_URL,VPS_HOST
           script: |
             cd /opt/webrtc-e2ee/
-            tar -xzf deployment.tar.gz
-            chmod +x scripts/deploy.sh
-            DOMAIN="${{ secrets.DOMAIN }}" \
-            EMAIL_LETSENCRYPT="${{ secrets.EMAIL_LETSENCRYPT }}" \
-            JWT_SIGNING_KEY="${{ secrets.JWT_SIGNING_KEY }}" \
-            TURN_REALM="${{ secrets.TURN_REALM }}" \
-            TURN_AUTH_SECRET="${{ secrets.TURN_AUTH_SECRET }}" \
-            TURN_CRED_TTL="${{ secrets.TURN_CRED_TTL }}" \
-            ALLOWED_USER_IDS="${{ secrets.ALLOWED_USER_IDS }}" \
-            CONTACT_LIST_JSON="${{ secrets.CONTACT_LIST_JSON }}" \
-            APP_PUBLIC_URL="${{ secrets.APP_PUBLIC_URL }}" \
-            VPS_HOST="${{ secrets.VPS_HOST }}" \
-            ./scripts/deploy.sh
+            cat > .env <<EOF
+            DOMAIN="${DOMAIN}"
+            EMAIL_LETSENCRYPT="${EMAIL_LETSENCRYPT}"
+            JWT_SIGNING_KEY="${JWT_SIGNING_KEY}"
+            TURN_REALM="${TURN_REALM}"
+            TURN_AUTH_SECRET="${TURN_AUTH_SECRET}"
+            TURN_CRED_TTL="${TURN_CRED_TTL}"
+            ALLOWED_USER_IDS="${ALLOWED_USER_IDS}"
+            CONTACT_LIST_JSON="${CONTACT_LIST_JSON}"
+            APP_PUBLIC_URL="${APP_PUBLIC_URL}"
+            VPS_HOST="${VPS_HOST}"
+            EOF
+
+            echo "Содержимое .env:"
+            cat .env
+
+            docker compose down || true
+            docker compose pull
+            docker compose up -d
 
       - name: Deploy result
         if: always()
