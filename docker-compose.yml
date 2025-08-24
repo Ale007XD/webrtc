@@ -2,8 +2,6 @@
 # Docker Compose Configuration
 # All secrets passed through environment variables
 
-version: '3.8'
-
 services:
   # Reverse Proxy - Nginx with TLS termination and stream proxy
   proxy:
