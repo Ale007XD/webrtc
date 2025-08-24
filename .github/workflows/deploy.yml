@@ -2,8 +2,7 @@ name: Deploy WebRTC E2EE
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
   workflow_dispatch:
 
 jobs:
@@ -11,14 +10,14 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repo
+      - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Create deployment archive
+      - name: Prepare deployment archive
         run: |
-          tar -czf deployment.tar.gz docker-compose.yml proxy/ turn/ scripts/
+          tar -czf deployment.tar.gz docker-compose.yml proxy/ turn/ scripts/ server/
 
-      - name: Transfer deployment archive to VPS
+      - name: SCP to VPS
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.VPS_HOST }}
@@ -33,7 +32,8 @@ jobs:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_SSH_KEY }}
-          envs: DOMAIN,EMAIL_LETSENCRYPT,JWT_SIGNING_KEY,TURN_REALM,TURN_AUTH_SECRET
+          envs: |
+            DOMAIN,EMAIL_LETSENCRYPT,JWT_SIGNING_KEY,TURN_REALM,TURN_AUTH_SECRET,TURN_CRED_TTL,ALLOWED_USER_IDS,CONTACT_LIST_JSON,APP_PUBLIC_URL,VPS_HOST
           script: |
             cd /opt/webrtc-e2ee/
             tar -xzf deployment.tar.gz
@@ -43,6 +43,11 @@ jobs:
             JWT_SIGNING_KEY="${{ secrets.JWT_SIGNING_KEY }}" \
             TURN_REALM="${{ secrets.TURN_REALM }}" \
             TURN_AUTH_SECRET="${{ secrets.TURN_AUTH_SECRET }}" \
+            TURN_CRED_TTL="${{ secrets.TURN_CRED_TTL }}" \
+            ALLOWED_USER_IDS="${{ secrets.ALLOWED_USER_IDS }}" \
+            CONTACT_LIST_JSON="${{ secrets.CONTACT_LIST_JSON }}" \
+            APP_PUBLIC_URL="${{ secrets.APP_PUBLIC_URL }}" \
+            VPS_HOST="${{ secrets.VPS_HOST }}" \
             ./scripts/deploy.sh
 
       - name: Deploy result
