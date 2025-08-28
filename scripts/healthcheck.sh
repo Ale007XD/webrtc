@@ -1,29 +1,41 @@
 #!/bin/bash
-# Health Check Script for WebRTC E2EE System
-
 set -e
 
-DOMAIN=${DOMAIN:-"localhost"}
-echo "🏥 Running health checks for $DOMAIN..."
+echo "🚀 Starting TURN Server..."
 
-# Check web service
-echo -n "Web service: "
-if curl -sf "https://$DOMAIN/health" >/dev/null 2>&1; then
-    echo "✅ OK"
-else
-    echo "❌ FAIL"
+# Detect external IP
+EXTERNAL_IP=$(curl -s ifconfig.me || curl -s icanhazip.com || echo "127.0.0.1")
+export EXTERNAL_IP
+
+echo "🌍 External IP detected: $EXTERNAL_IP"
+
+# Generate self-signed certificates for TLS if not exist
+if [ ! -f "/etc/coturn/turn_server_cert.pem" ]; then
+    echo "🔒 Generating TURN server certificates..."
+    openssl req -x509 -newkey rsa:2048 -keyout /etc/coturn/turn_server_pkey.pem \
+        -out /etc/coturn/turn_server_cert.pem -days 365 -nodes \
+        -subj "/C=US/ST=State/L=City/O=Organization/CN=${TURN_REALM}"
+    
+    # Set permissions
+    chmod 600 /etc/coturn/turn_server_pkey.pem
+    chmod 644 /etc/coturn/turn_server_cert.pem
 fi
 
-# Check signaling API
-echo -n "Signaling API: "
-if curl -sf "https://api.$DOMAIN/api/health" >/dev/null 2>&1; then
-    echo "✅ OK"
-else
-    echo "❌ FAIL"
-fi
+# Replace environment variables in configuration
+echo "🔧 Configuring TURN server..."
+envsubst '${TURN_REALM} ${TURN_AUTH_SECRET} ${EXTERNAL_IP}' < /etc/coturn/turnserver.conf > /tmp/turnserver.conf
+mv /tmp/turnserver.conf /etc/coturn/turnserver.conf
 
-# Check Docker containers
-echo "Docker containers:"
-docker ps --format "table {{.Names}}\t{{.Status}}" | grep webrtc- || echo "No webrtc containers found"
+# Ensure log directory exists
+mkdir -p /var/log/turn
 
-echo "✅ Health check completed"
+# Print configuration summary
+echo "📋 TURN Server Configuration:"
+echo "   Realm: ${TURN_REALM}"
+echo "   External IP: ${EXTERNAL_IP}"
+echo "   Auth Secret: ${TURN_AUTH_SECRET:0:8}***"
+echo "   Credential TTL: ${TURN_CRED_TTL}s"
+
+# Start TURN server
+echo "🎯 Starting CoTURN..."
+exec turnserver -c /etc/coturn/turnserver.conf
