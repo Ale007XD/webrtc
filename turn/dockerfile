@@ -1,9 +1,28 @@
-FROM coturn/coturn:latest
+FROM coturn/coturn:alpine
 
-EXPOSE 3478/tcp
-EXPOSE 3478/udp
-EXPOSE 5349/tcp
-EXPOSE 5349/udp
-EXPOSE 49152-65535/udp
+Install additional tools
+RUN apk add --no-cache bash envsubst
 
-CMD ["turnserver", "-c", "/etc/coturn/turnserver.conf"]
+Copy configuration files
+COPY turnserver.conf /etc/coturn/turnserver.conf
+COPY entrypoint.sh /entrypoint.sh
+
+Make entrypoint executable
+RUN chmod +x /entrypoint.sh
+
+Create user for coturn
+RUN addgroup -g 1000 coturn &&
+adduser -u 1000 -G coturn -s /bin/bash -D coturn
+
+Create directories and set permissions
+RUN mkdir -p /var/log/turn /var/lib/coturn &&
+chown -R coturn:coturn /var/log/turn /var/lib/coturn /etc/coturn
+
+Expose ports
+EXPOSE 3478/udp 3478/tcp 5349/udp 5349/tcp 49152-65535/udp
+
+Switch to coturn user
+USER coturn
+
+Use custom entrypoint
+ENTRYPOINT ["/entrypoint.sh"]
