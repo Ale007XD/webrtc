@@ -1,20 +1,41 @@
 #!/bin/bash
-# TURN Server Entrypoint Script
-
 set -e
 
-# Generate self-signed certificates if not present
-if [ ! -f /etc/ssl/certs/turn_server_cert.pem ]; then
-    echo "Generating self-signed certificates for TURN..."
-    openssl req -x509 -newkey rsa:4096 -keyout /etc/ssl/private/turn_server_pkey.pem \
-        -out /etc/ssl/certs/turn_server_cert.pem -days 365 -nodes \
-        -subj "/C=RU/ST=Moscow/L=Moscow/O=WebRTC-E2EE/CN=${TURN_REALM:-localhost}"
-    chmod 600 /etc/ssl/private/turn_server_pkey.pem
+echo "🚀 Starting TURN Server..."
+
+# Detect external IP
+EXTERNAL_IP=$(curl -s ifconfig.me || curl -s icanhazip.com || echo "127.0.0.1")
+export EXTERNAL_IP
+
+echo "🌍 External IP detected: $EXTERNAL_IP"
+
+# Generate self-signed certificates for TLS if not exist
+if [ ! -f "/etc/coturn/turn_server_cert.pem" ]; then
+    echo "🔒 Generating TURN server certificates..."
+    openssl req -x509 -newkey rsa:2048 -keyout /etc/coturn/turn_server_pkey.pem \
+        -out /etc/coturn/turn_server_cert.pem -days 365 -nodes \
+        -subj "/C=US/ST=State/L=City/O=Organization/CN=${TURN_REALM}"
+    
+    # Set permissions
+    chmod 600 /etc/coturn/turn_server_pkey.pem
+    chmod 644 /etc/coturn/turn_server_cert.pem
 fi
 
-# Substitute environment variables in config
-envsubst < /etc/turnserver.conf > /tmp/turnserver.conf
-mv /tmp/turnserver.conf /etc/turnserver.conf
+# Replace environment variables in configuration
+echo "🔧 Configuring TURN server..."
+envsubst '${TURN_REALM} ${TURN_AUTH_SECRET} ${EXTERNAL_IP}' < /etc/coturn/turnserver.conf > /tmp/turnserver.conf
+mv /tmp/turnserver.conf /etc/coturn/turnserver.conf
+
+# Ensure log directory exists
+mkdir -p /var/log/turn
+
+# Print configuration summary
+echo "📋 TURN Server Configuration:"
+echo "   Realm: ${TURN_REALM}"
+echo "   External IP: ${EXTERNAL_IP}"
+echo "   Auth Secret: ${TURN_AUTH_SECRET:0:8}***"
+echo "   Credential TTL: ${TURN_CRED_TTL}s"
 
 # Start TURN server
-exec turnserver "$@"
+echo "🎯 Starting CoTURN..."
+exec turnserver -c /etc/coturn/turnserver.conf
